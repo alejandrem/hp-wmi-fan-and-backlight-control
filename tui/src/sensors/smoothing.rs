@@ -159,13 +159,11 @@ pub fn smooth_total_power(value: f64) -> f64 {
     smoother.lock().unwrap().smooth(value)
 }
 
-#[allow(dead_code)]
 pub fn smooth_net_rx(value: f64) -> f64 {
     let smoother = NET_RX_SMOOTHER.get_or_init(|| Mutex::new(Smoother::new(0.3)));
     smoother.lock().unwrap().smooth(value)
 }
 
-#[allow(dead_code)]
 pub fn smooth_net_tx(value: f64) -> f64 {
     let smoother = NET_TX_SMOOTHER.get_or_init(|| Mutex::new(Smoother::new(0.3)));
     smoother.lock().unwrap().smooth(value)

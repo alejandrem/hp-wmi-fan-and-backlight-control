@@ -11,9 +11,9 @@ pub struct NetworkInfo {
     pub ip_address: String,
     pub download_rate: f64,  // KiB/s
     pub upload_rate: f64,    // KiB/s
-    #[allow(dead_code)]
+    pub download_peak: f64,  // Peak download KiB/s
+    pub upload_peak: f64,    // Peak upload KiB/s
     pub download_total: f64, // Total bytes downloaded
-    #[allow(dead_code)]
     pub upload_total: f64,   // Total bytes uploaded
 }
 
@@ -21,6 +21,8 @@ struct State {
     rx_bytes: u64,
     tx_bytes: u64,
     last_time: Instant,
+    peak_rx: f64,
+    peak_tx: f64,
 }
 
 static STATE: OnceLock<std::sync::Mutex<Option<State>>> = OnceLock::new();
@@ -28,13 +30,15 @@ static STATE: OnceLock<std::sync::Mutex<Option<State>>> = OnceLock::new();
 pub fn read_network() -> Option<NetworkInfo> {
     let iface = find_active_interface()?;
     let (rx, tx) = read_net_bytes(&iface)?;
-    let (rate_rx, rate_tx) = calc_net_rates(rx, tx);
+    let (rate_rx, rate_tx, peak_rx, peak_tx) = calc_net_rates(rx, tx);
     let ip = get_ip_address(&iface).unwrap_or_else(|| "N/A".into());
     Some(NetworkInfo {
         interface: iface,
         ip_address: ip,
         download_rate: rate_rx,
         upload_rate: rate_tx,
+        download_peak: peak_rx,
+        upload_peak: peak_tx,
         download_total: rx as f64,
         upload_total: tx as f64,
     })
@@ -46,27 +50,44 @@ fn read_net_bytes(iface: &str) -> Option<(u64, u64)> {
     Some((rx, tx))
 }
 
-fn calc_net_rates(rx: u64, tx: u64) -> (f64, f64) {
+fn calc_net_rates(rx: u64, tx: u64) -> (f64, f64, f64, f64) {
     let state = STATE.get_or_init(|| std::sync::Mutex::new(None));
     let mut guard = state.lock().unwrap();
     let now = Instant::now();
-    let (rate_rx, rate_tx) = update_net_state(&mut guard, rx, tx, now);
-    *guard = Some(State { rx_bytes: rx, tx_bytes: tx, last_time: now });
-    (rate_rx, rate_tx)
+    let (rate_rx, rate_tx, peak_rx, peak_tx) =
+        update_net_state(&mut guard, rx, tx, now);
+    *guard = Some(State {
+        rx_bytes: rx, tx_bytes: tx, last_time: now,
+        peak_rx, peak_tx,
+    });
+    (rate_rx, rate_tx, peak_rx, peak_tx)
 }
 
 fn update_net_state(
     guard: &mut Option<State>, rx: u64, tx: u64, now: Instant,
-) -> (f64, f64) {
-    let Some(prev) = guard else { return (0.0, 0.0) };
+) -> (f64, f64, f64, f64) {
+    let Some(prev) = guard else {
+        return (0.0, 0.0, 0.0, 0.0);
+    };
     let delta = now.duration_since(prev.last_time);
     if delta.as_secs_f64() <= 0.0 {
-        return (0.0, 0.0);
+        return (0.0, 0.0, prev.peak_rx, prev.peak_tx);
     }
     let rx_delta = rx.saturating_sub(prev.rx_bytes) as f64;
     let tx_delta = tx.saturating_sub(prev.tx_bytes) as f64;
     let rate = delta.as_secs_f64();
-    (rx_delta / rate / 1024.0, tx_delta / rate / 1024.0)
+    let rate_rx = rx_delta / rate / 1024.0;
+    let rate_tx = tx_delta / rate / 1024.0;
+    smooth_net_rates(rate_rx, rate_tx);
+    let peak_rx = rate_rx.max(prev.peak_rx);
+    let peak_tx = rate_tx.max(prev.peak_tx);
+    (rate_rx, rate_tx, peak_rx, peak_tx)
+}
+
+fn smooth_net_rates(rx: f64, tx: f64) {
+    use crate::sensors::smoothing;
+    smoothing::smooth_net_rx(rx);
+    smoothing::smooth_net_tx(tx);
 }
 
 fn find_active_interface() -> Option<String> {
