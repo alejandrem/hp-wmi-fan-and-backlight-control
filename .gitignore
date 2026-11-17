@@ -11,4 +11,7 @@ pkg/
 *.pkg.tar.zst
 akmod-build/
 .vscode
-src/
+/src/
+tui/target/
+tui/Cargo.lock
+tui/fanctl
