@@ -4,7 +4,7 @@
 mod sensors;
 mod widgets;
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::Frame;
@@ -43,18 +43,25 @@ fn main() {
         .expect("Failed to create terminal");
     let mut app = App::new();
 
+    let mut last_update = std::time::Instant::now();
     loop {
         terminal.draw(|f| draw(f, &app)).unwrap();
-        if event::poll(Duration::from_millis(2000)).unwrap() {
-            if let Event::Key(KeyEvent { code, kind, .. }) = event::read().unwrap() {
+        if event::poll(Duration::from_millis(100)).unwrap() {
+            if let Event::Key(KeyEvent { code, kind, modifiers, .. }) = event::read().unwrap() {
                 if kind == KeyEventKind::Press {
                     if code == KeyCode::Char('q') || code == KeyCode::Esc {
+                        break;
+                    }
+                    if code == KeyCode::Char('c') && modifiers == KeyModifiers::CONTROL {
                         break;
                     }
                 }
             }
         }
-        app.update();
+        if last_update.elapsed() >= Duration::from_millis(2000) {
+            app.update();
+            last_update = std::time::Instant::now();
+        }
     }
 
     restore_terminal();
