@@ -13,7 +13,6 @@ pub struct ProcessInfo {
 
 pub fn read_processes() -> Vec<ProcessInfo> {
     let total_mem = get_total_mem_kb();
-    let _num_cpus = get_num_cpus();
     let clk_tck = get_clk_tck();
     let uptime = get_uptime().unwrap_or(1.0);
 
@@ -140,6 +139,7 @@ fn get_total_mem_kb() -> f64 {
         .unwrap_or(1.0)
 }
 
+#[allow(dead_code)]
 fn get_num_cpus() -> usize {
     std::fs::read_to_string("/proc/cpuinfo")
         .ok()

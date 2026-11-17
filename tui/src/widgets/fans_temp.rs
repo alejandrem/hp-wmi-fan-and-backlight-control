@@ -140,7 +140,6 @@ fn draw_temp_row(
     temp: Option<f64>, power: Option<f64>,
 ) {
     let ratio = calc_temp_ratio(temp);
-    let _color = temp_color(ratio);
     let parts = split_temp_layout(area);
     render_temp_label(frame, parts[0], label);
     render_temp_gauge(frame, parts[1], ratio, temp);
