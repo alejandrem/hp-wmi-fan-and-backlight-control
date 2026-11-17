@@ -21,10 +21,10 @@ pub fn render(frame: &mut Frame, sensors: &Sensors, area: Rect) {
 fn build_header_block() -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Double)
-        .border_style(Style::default().fg(Color::Reset))
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(Color::DarkGray))
         .title(Span::styled(
-            "  ALETOP  ",
+            " ALETOP ",
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
