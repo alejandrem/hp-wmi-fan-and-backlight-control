@@ -55,12 +55,15 @@ pub struct RawPower {
 }
 
 pub fn read_power_data() -> RawPower {
+    let cpu = power_readings::read_cpu_power();
+    let igpu = power_readings::read_igpu_power();
+    let gpu = power_readings::read_gpu_power();
     RawPower {
-        cpu: power_readings::read_cpu_power(),
-        igpu: power_readings::read_igpu_power(),
-        gpu: power_readings::read_gpu_power(),
+        cpu,
+        igpu,
+        gpu,
         npu: power_readings::read_npu_power(),
-        total: power_readings::read_total_power(),
+        total: power_readings::read_total_power(cpu, igpu, gpu),
     }
 }
 

@@ -90,11 +90,14 @@ struct App {
 
 impl App {
     fn new() -> Self {
-        let current = sensors::Sensors::read();
+        let current = sensors::Sensors::empty();
         let (sensor_tx, sensor_rx) = mpsc::sync_channel(1);
         let (fan_result_tx, fan_result_rx) = mpsc::channel();
         std::thread::spawn(move || {
             let interval = Duration::from_millis(500);
+            if sensor_tx.send(sensors::Sensors::read()).is_err() {
+                return;
+            }
             let mut next_sample = std::time::Instant::now() + interval;
             loop {
                 std::thread::sleep(next_sample.saturating_duration_since(std::time::Instant::now()));

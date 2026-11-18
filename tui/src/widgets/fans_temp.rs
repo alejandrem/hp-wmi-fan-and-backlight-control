@@ -4,11 +4,13 @@
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::layout::Position;
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::symbols::Marker;
 use ratatui::text::Span;
+use ratatui::widgets::canvas::{Canvas, Points};
 use ratatui::widgets::{Block, BorderType, Borders, LineGauge, Paragraph};
 use ratatui::Frame;
 
-use crate::sensors::Sensors;
+use crate::sensors::{smoothing, Sensors};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FanControlButton {
@@ -52,15 +54,17 @@ fn build_fans_block() -> Block<'static> {
 }
 
 fn build_fans_rows(inner: Rect) -> Vec<Rect> {
-    let total_rows = 11;
-    let row_h = calc_row_height(inner.height, total_rows);
+    // Keep controls, fan readings, and the separator compact at the top;
+    // divide all remaining panel height among the six temperature graphs.
+    let fixed_rows = 5usize;
+    let temperature_rows = 6usize;
+    let available = inner.height.saturating_sub(fixed_rows as u16) as usize;
+    let graph_height = (available / temperature_rows).max(1) as u16;
+    let mut constraints = vec![Constraint::Length(1); fixed_rows];
+    constraints.extend(std::iter::repeat(Constraint::Length(graph_height)).take(temperature_rows));
     Layout::default()
         .direction(Direction::Vertical)
-        .constraints(
-            std::iter::repeat(Constraint::Length(row_h))
-                .take(total_rows)
-                .collect::<Vec<_>>(),
-        )
+        .constraints(constraints)
         .split(inner)
         .to_vec()
 }
@@ -134,14 +138,6 @@ fn render_control_hint(frame: &mut Frame, area: Option<Rect>, message: &str) {
     frame.render_widget(widget, area);
 }
 
-fn calc_row_height(height: u16, total_rows: usize) -> u16 {
-    if height as usize >= total_rows {
-        1
-    } else {
-        (height as usize / total_rows).max(1) as u16
-    }
-}
-
 fn render_fans(frame: &mut Frame, rows: &[Rect], sensors: &Sensors) {
     draw_fan_row(frame, rows, 2, "Fan 1", sensors.fan1_rpm, 4300.0);
     draw_fan_row(frame, rows, 3, "Fan 2", sensors.fan2_rpm, 4100.0);
@@ -161,7 +157,7 @@ fn render_temps(frame: &mut Frame, rows: &[Rect], sensors: &Sensors) {
     let temps = build_temp_list(sensors);
     for (i, (label, temp, power)) in temps.iter().enumerate() {
         if let Some(row) = rows.get(5 + i) {
-            draw_temp_row(frame, *row, label, *temp, *power);
+            draw_temp_row(frame, *row, label, *temp, *power, i);
         }
     }
 }
@@ -226,13 +222,14 @@ fn render_fan_gauge(frame: &mut Frame, area: Rect, ratio: f64) {
 
 fn draw_temp_row(
     frame: &mut Frame, area: Rect, label: &str,
-    temp: Option<f64>, power: Option<f64>,
+    temp: Option<f64>, power: Option<f64>, history_index: usize,
 ) {
     let ratio = calc_temp_ratio(temp);
     let parts = split_temp_layout(area);
     render_temp_label(frame, parts[0], label);
-    render_temp_gauge(frame, parts[1], ratio, temp);
-    render_temp_power(frame, parts[2], power);
+    render_temp_gauge(frame, parts[1], ratio, history_index);
+    render_temp_value(frame, parts[2], temp);
+    render_temp_power(frame, parts[3], power);
 }
 
 fn calc_temp_ratio(temp: Option<f64>) -> f64 {
@@ -242,7 +239,10 @@ fn calc_temp_ratio(temp: Option<f64>) -> f64 {
 fn split_temp_layout(area: Rect) -> Vec<Rect> {
     Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(9), Constraint::Min(1), Constraint::Length(7)])
+        .constraints([
+            Constraint::Length(9), Constraint::Min(1),
+            Constraint::Length(5), Constraint::Length(7),
+        ])
         .split(area)
         .to_vec()
 }
@@ -255,21 +255,31 @@ fn render_temp_label(frame: &mut Frame, area: Rect, label: &str) {
     frame.render_widget(widget, area);
 }
 
-fn render_temp_gauge(frame: &mut Frame, area: Rect, ratio: f64, temp: Option<f64>) {
-    let temp_text = temp.map(|t| format!("{:.0} C", t))
-        .unwrap_or_else(|| "N/A".into());
+fn render_temp_gauge(frame: &mut Frame, area: Rect, ratio: f64, history_index: usize) {
+    if area.is_empty() {
+        return;
+    }
     let color = temp_color(ratio);
-    let gauge = LineGauge::default()
-        .ratio(ratio)
-        .label(Span::styled(
-            temp_text,
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-        ))
-        .filled_symbol("-")
-        .unfilled_symbol(".")
-        .filled_style(Style::default().fg(color))
-        .unfilled_style(Style::default().fg(Color::DarkGray));
-    frame.render_widget(gauge, area);
+    let history = smoothing::temperature_history(history_index);
+    let points = super::graph::vertical_dot_history(&history, area.width);
+    if points.is_empty() {
+        return;
+    }
+    let graph = Canvas::default()
+        .x_bounds([0.0, area.width as f64])
+        .y_bounds([0.0, 4.0])
+        .marker(Marker::Braille)
+        .paint(|context| context.draw(&Points::new(&points, color)));
+    frame.render_widget(graph, area);
+}
+
+fn render_temp_value(frame: &mut Frame, area: Rect, temp: Option<f64>) {
+    let value = temp.map(|t| format!("{:>3.0} C", t)).unwrap_or_else(|| " N/A".into());
+    let widget = Paragraph::new(Span::styled(
+        value,
+        Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+    ));
+    frame.render_widget(widget, area);
 }
 
 fn render_temp_power(frame: &mut Frame, area: Rect, power: Option<f64>) {

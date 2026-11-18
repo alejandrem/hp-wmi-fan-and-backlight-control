@@ -53,6 +53,8 @@ static NET_RX_SMOOTHER: OnceLock<Mutex<Smoother>> = OnceLock::new();
 static NET_TX_SMOOTHER: OnceLock<Mutex<Smoother>> = OnceLock::new();
 static MEMORY_HISTORY: OnceLock<Mutex<[Vec<f64>; 4]>> = OnceLock::new();
 static DISK_HISTORY: OnceLock<Mutex<HashMap<String, Vec<f64>>>> = OnceLock::new();
+static TEMPERATURE_HISTORY: OnceLock<Mutex<[Vec<f64>; 6]>> = OnceLock::new();
+static USAGE_HISTORY: OnceLock<Mutex<HashMap<String, Vec<f64>>>> = OnceLock::new();
 
 pub fn record_memory_usage(used: f64, available: f64, cached: f64, free: f64, total: f64) {
     if total <= 0.0 {
@@ -93,6 +95,59 @@ pub fn disk_history(mount: &str) -> Vec<f64> {
     DISK_HISTORY
         .get()
         .and_then(|histories| histories.lock().ok()?.get(mount).cloned())
+        .unwrap_or_default()
+}
+
+pub fn record_temperature_usage(temperatures: [Option<f64>; 6]) {
+    let histories = TEMPERATURE_HISTORY.get_or_init(|| {
+        Mutex::new(std::array::from_fn(|_| Vec::with_capacity(HISTORY_LEN)))
+    });
+    let mut histories = histories.lock().unwrap();
+    for (history, temperature) in histories.iter_mut().zip(temperatures) {
+        if let Some(temperature) = temperature {
+            // The graph's 100% reference is 100 °C.
+            history.push(temperature.clamp(0.0, 100.0));
+            if history.len() > HISTORY_LEN {
+                history.remove(0);
+            }
+        }
+    }
+}
+
+pub fn temperature_history(index: usize) -> Vec<f64> {
+    TEMPERATURE_HISTORY
+        .get()
+        .and_then(|histories| histories.lock().ok()?.get(index).cloned())
+        .unwrap_or_default()
+}
+
+pub fn record_usage_histories(cpu: f64, cores: &[f64], igpu: Option<f64>, gpu: Option<f64>) {
+    let histories = USAGE_HISTORY.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut histories = histories.lock().unwrap();
+    push_usage_sample(&mut histories, "cpu", cpu);
+    for (index, usage) in cores.iter().enumerate() {
+        push_usage_sample(&mut histories, &format!("core:{index}"), *usage);
+    }
+    if let Some(usage) = igpu {
+        push_usage_sample(&mut histories, "gpu0", usage);
+    }
+    if let Some(usage) = gpu {
+        push_usage_sample(&mut histories, "gpu1", usage);
+    }
+}
+
+fn push_usage_sample(histories: &mut HashMap<String, Vec<f64>>, key: &str, value: f64) {
+    let history = histories.entry(key.to_string()).or_default();
+    history.push(value.clamp(0.0, 100.0));
+    if history.len() > HISTORY_LEN {
+        history.remove(0);
+    }
+}
+
+pub fn usage_history(key: &str) -> Vec<f64> {
+    USAGE_HISTORY
+        .get()
+        .and_then(|histories| histories.lock().ok()?.get(key).cloned())
         .unwrap_or_default()
 }
 

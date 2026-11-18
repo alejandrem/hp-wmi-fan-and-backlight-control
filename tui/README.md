@@ -22,6 +22,14 @@ cargo run --release --bin aletop
 
 El ejecutable queda en `target/release/aletop`. En una terminal, presiona `q` o `Esc` para salir. Si la salida no es una terminal, Ale Top imprime un resumen de las lecturas disponibles.
 
+Para instalarlo como comando `aletop` en tu usuario, ejecuta desde este directorio:
+
+```sh
+bash install-aletop.sh
+```
+
+El instalador usa `cargo install` y coloca el comando en `~/.cargo/bin`. Si tu terminal no encuentra `aletop`, agrega `~/.cargo/bin` a tu `PATH` y abre una terminal nueva.
+
 En el panel de ventiladores puedes hacer clic en `AUTO`, `MAX`, ajustar RPM con `−`/`+` y aplicar hasta 6000 RPM. Los atajos son `F1` (AUTO), `F2` (MAX) y `F3` para escribir RPM y confirmar con `Enter`. Al pulsar un modo aparece inmediatamente un modal de progreso, que luego muestra el resultado. Si `sudo` necesita autenticación, la contraseña se captura oculta dentro de ese modal.
 
 Para compilar la herramienta de ventiladores por separado:

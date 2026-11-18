@@ -6,6 +6,10 @@
 // - NPU: no sensor available yet
 
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
+
+static RAPL_PREVIOUS: OnceLock<Mutex<Option<(u64, Instant)>>> = OnceLock::new();
 
 pub fn read_cpu_power() -> Option<f64> {
     read_rapl_power()
@@ -38,11 +42,16 @@ fn read_rapl_energy() -> Option<u64> {
 }
 
 fn read_rapl_power() -> Option<f64> {
-    let e1 = read_rapl_energy()?;
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    let e2 = read_rapl_energy()?;
-    let delta_uj = e2.saturating_sub(e1);
-    Some(delta_uj as f64 / 500_000.0)
+    let energy = read_rapl_energy()?;
+    let now = Instant::now();
+    let previous = RAPL_PREVIOUS.get_or_init(|| Mutex::new(None));
+    let mut previous = previous.lock().unwrap_or_else(|error| error.into_inner());
+    let reading = previous.take().and_then(|(old_energy, old_time)| {
+        let elapsed = now.duration_since(old_time).as_secs_f64();
+        (elapsed > 0.0).then(|| energy.saturating_sub(old_energy) as f64 / elapsed / 1_000_000.0)
+    });
+    *previous = Some((energy, now));
+    reading
 }
 
 pub fn read_igpu_power() -> Option<f64> {
@@ -85,11 +94,8 @@ pub fn read_npu_power() -> Option<f64> {
 
 /// Returns total system power in Watts by summing CPU + iGPU + GPU power.
 /// Falls back to battery power if available.
-pub fn read_total_power() -> Option<f64> {
-    let cpu = read_cpu_power().unwrap_or(0.0);
-    let igpu = read_igpu_power().unwrap_or(0.0);
-    let gpu = read_gpu_power().unwrap_or(0.0);
-    let total = cpu + igpu + gpu;
+pub fn read_total_power(cpu: Option<f64>, igpu: Option<f64>, gpu: Option<f64>) -> Option<f64> {
+    let total = cpu.unwrap_or(0.0) + igpu.unwrap_or(0.0) + gpu.unwrap_or(0.0);
     if total > 0.0 {
         Some(total)
     } else {

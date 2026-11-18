@@ -62,8 +62,31 @@ pub struct Sensors {
 }
 
 impl Sensors {
+    pub fn empty() -> Self {
+        Self {
+            cpu_temp: None, igpu_temp: None, gpu_temp: None, nvme_temp: None,
+            acpi_temp: None, chipset_temp: None, battery_pct: None,
+            battery_status: None, battery_time_remaining: None,
+            fan1_rpm: None, fan2_rpm: None, cpu_cores: 0, cpu_usage: 0.0,
+            cpu_model: "CPU".into(), per_core_usage: Vec::new(),
+            igpu_usage: None, igpu_model: "iGPU".into(), gpu_usage: None,
+            gpu_mem_usage: None, gpu_model: "GPU".into(), npu_usage: None,
+            npu_model: "NPU".into(), cpu_power: None, igpu_power: None,
+            gpu_power: None, npu_power: None, total_power: None,
+            memory: MemoryInfo {
+                total_gib: 0.0, used_gib: 0.0, available_gib: 0.0,
+                cached_gib: 0.0, free_gib: 0.0,
+            },
+            disks: Vec::new(), network: None, processes: Vec::new(),
+            uptime: "00:00:00".into(), load_avg: [0.0; 3],
+        }
+    }
+
     pub fn read() -> Self {
         let temps = read_temperatures();
+        smoothing::record_temperature_usage([
+            temps.cpu, temps.igpu, temps.gpu, temps.nvme, temps.acpi, temps.chipset,
+        ]);
         let battery = read_battery();
         let fans = read_fans();
         let cpu = aggregate::read_cpu_data();
@@ -72,6 +95,12 @@ impl Sensors {
         let npu = npu_usage::read_npu_usage();
         let power = aggregate::read_power_data();
         let smoothed = aggregate::apply_smoothing(cpu, igpu, gpu, power);
+        smoothing::record_usage_histories(
+            smoothed.cpu_usage,
+            &smoothed.per_core,
+            smoothed.igpu_usage,
+            smoothed.gpu_usage,
+        );
         let system = aggregate::read_system_data();
         smoothing::record_memory_usage(
             system.memory.used_gib,

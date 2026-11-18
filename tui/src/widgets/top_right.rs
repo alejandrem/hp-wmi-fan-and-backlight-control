@@ -3,11 +3,13 @@
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::symbols::Marker;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, LineGauge, Paragraph};
+use ratatui::widgets::canvas::{Canvas, Points};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use ratatui::Frame;
 
-use crate::sensors::Sensors;
+use crate::sensors::{smoothing, Sensors};
 
 pub fn render(frame: &mut Frame, sensors: &Sensors, area: Rect) {
     let block = Block::default()
@@ -60,20 +62,7 @@ fn draw_cpu_header(frame: &mut Frame, s: &Sensors, area: Rect) {
 }
 
 fn draw_cpu_gauge(frame: &mut Frame, s: &Sensors, area: Rect) {
-    let ratio = (s.cpu_usage / 100.0).clamp(0.0, 1.0);
-    let label = format!("CPU {:.0}%", s.cpu_usage);
-    let color = usage_color(s.cpu_usage);
-    let gauge = LineGauge::default()
-        .ratio(ratio)
-        .label(Span::styled(
-            label,
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-        ))
-        .filled_symbol("█")
-        .unfilled_symbol("░")
-        .filled_style(Style::default().fg(color))
-        .unfilled_style(Style::default().fg(Color::DarkGray));
-    frame.render_widget(gauge, area);
+    draw_usage_graph(frame, area, &format!("CPU {:.0}%", s.cpu_usage), "cpu", s.cpu_usage);
 }
 
 fn draw_per_core_bars(frame: &mut Frame, s: &Sensors, area: Rect) {
@@ -132,21 +121,13 @@ fn render_core_column(
 }
 
 fn draw_core_bar(frame: &mut Frame, area: Rect, core_idx: usize, usage: f64) {
-    let label = format!("C{:2}", core_idx);
-    let ratio = (usage / 100.0).clamp(0.0, 1.0);
-    let color = usage_color(usage);
-
-    let gauge = LineGauge::default()
-        .ratio(ratio)
-        .label(Span::styled(
-            format!("{} {:.0}%", label, usage),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-        ))
-        .filled_symbol("█")
-        .unfilled_symbol("░")
-        .filled_style(Style::default().fg(color))
-        .unfilled_style(Style::default().fg(Color::DarkGray));
-    frame.render_widget(gauge, area);
+    draw_usage_graph(
+        frame,
+        area,
+        &format!("C{:2} {:.0}%", core_idx, usage),
+        &format!("core:{core_idx}"),
+        usage,
+    );
 }
 
 fn draw_load_avg(frame: &mut Frame, s: &Sensors, area: Rect) {
@@ -162,24 +143,35 @@ fn draw_load_avg(frame: &mut Frame, s: &Sensors, area: Rect) {
 }
 
 fn draw_gpu_bar(frame: &mut Frame, area: Rect, label: &str, usage: Option<f64>) {
-    let (ratio, color, pct_text) = match usage {
-        Some(u) => {
-            let r = (u / 100.0).clamp(0.0, 1.0);
-            (r, usage_color(u), format!("{:.0}%", u))
-        }
-        None => (0.0, Color::DarkGray, "N/A".into()),
-    };
-    let gauge = LineGauge::default()
-        .ratio(ratio)
-        .label(Span::styled(
-            format!("{} [{}] {}", label, " ".repeat(10), pct_text),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-        ))
-        .filled_symbol("█")
-        .unfilled_symbol("░")
-        .filled_style(Style::default().fg(color))
-        .unfilled_style(Style::default().fg(Color::DarkGray));
-    frame.render_widget(gauge, area);
+    let pct_text = usage.map(|value| format!("{value:.0}%")).unwrap_or_else(|| "N/A".into());
+    let value = usage.unwrap_or(0.0);
+    let key = if label == "GPU0" { "gpu0" } else { "gpu1" };
+    draw_usage_graph(frame, area, &format!("{label} {pct_text}"), key, value);
+}
+
+fn draw_usage_graph(frame: &mut Frame, area: Rect, label: &str, key: &str, usage: f64) {
+    let label_width = (label.chars().count() as u16 + 1).min(area.width);
+    let parts = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(label_width), Constraint::Min(1)])
+        .split(area);
+    let label_widget = Paragraph::new(Span::styled(
+        label.to_string(),
+        Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+    ));
+    frame.render_widget(label_widget, parts[0]);
+
+    let history = smoothing::usage_history(key);
+    let points = super::graph::vertical_dot_history(&history, parts[1].width);
+    if parts[1].is_empty() || points.is_empty() {
+        return;
+    }
+    let chart = Canvas::default()
+        .x_bounds([0.0, parts[1].width as f64])
+        .y_bounds([0.0, 4.0])
+        .marker(Marker::Braille)
+        .paint(|context| context.draw(&Points::new(&points, usage_color(usage))));
+    frame.render_widget(chart, parts[1]);
 }
 
 fn usage_color(usage: f64) -> Color {
