@@ -11,21 +11,98 @@ use ratatui::Frame;
 use ratatui::Terminal;
 use std::io;
 use std::io::Write;
+use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
+
+use widgets::process::SortColumn;
 
 struct App {
     sensors: sensors::Sensors,
+    sensor_rx: Receiver<sensors::Sensors>,
+    process_scroll: usize,
+    process_page_size: usize,
+    process_sort: SortColumn,
+    process_reverse: bool,
 }
 
 impl App {
     fn new() -> Self {
-        App {
-            sensors: sensors::Sensors::read(),
-        }
+        let current = sensors::Sensors::read();
+        let (sensor_tx, sensor_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let interval = Duration::from_millis(500);
+            let mut next_sample = std::time::Instant::now() + interval;
+            loop {
+                std::thread::sleep(next_sample.saturating_duration_since(std::time::Instant::now()));
+                if sensor_tx.send(sensors::Sensors::read()).is_err() {
+                    break;
+                }
+                let now = std::time::Instant::now();
+                next_sample += interval;
+                if next_sample <= now {
+                    next_sample = now + interval;
+                }
+            }
+        });
+        let mut app = App {
+            sensors: current,
+            sensor_rx,
+            process_scroll: 0,
+            process_page_size: 1,
+            process_sort: SortColumn::Cpu,
+            process_reverse: false,
+        };
+        app.sort_processes();
+        app
     }
 
     fn update(&mut self) {
-        self.sensors = sensors::Sensors::read();
+        let mut changed = false;
+        while let Ok(sensors) = self.sensor_rx.try_recv() {
+            self.sensors = sensors;
+            changed = true;
+        }
+        if changed {
+            self.sort_processes();
+            self.process_scroll = self.process_scroll.min(
+                self.sensors.processes.len().saturating_sub(self.process_page_size),
+            );
+        }
+    }
+
+    fn sort_processes(&mut self) {
+        let sort = self.process_sort;
+        let reverse = self.process_reverse;
+        self.sensors.processes.sort_by(|a, b| {
+            let order = match sort {
+                SortColumn::Cpu => b.cpu_pct.partial_cmp(&a.cpu_pct).unwrap_or(std::cmp::Ordering::Equal),
+                SortColumn::Memory => b.mem_mb.partial_cmp(&a.mem_mb).unwrap_or(std::cmp::Ordering::Equal),
+                SortColumn::Pid => a.pid.cmp(&b.pid),
+                SortColumn::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            };
+            if reverse { order.reverse() } else { order }
+        });
+    }
+
+    fn handle_process_key(&mut self, code: KeyCode) {
+        let max_scroll = self.sensors.processes.len().saturating_sub(self.process_page_size);
+        let needs_sort = match code {
+            KeyCode::Up => { self.process_scroll = self.process_scroll.saturating_sub(1); false },
+            KeyCode::Down => { self.process_scroll = self.process_scroll.saturating_add(1).min(max_scroll); false },
+            KeyCode::PageUp => { self.process_scroll = self.process_scroll.saturating_sub(10); false },
+            KeyCode::PageDown => { self.process_scroll = self.process_scroll.saturating_add(10).min(max_scroll); false },
+            KeyCode::Home => { self.process_scroll = 0; false },
+            KeyCode::End => { self.process_scroll = max_scroll; false },
+            KeyCode::Char('1') => { self.process_sort = SortColumn::Cpu; true },
+            KeyCode::Char('2') => { self.process_sort = SortColumn::Memory; true },
+            KeyCode::Char('3') => { self.process_sort = SortColumn::Pid; true },
+            KeyCode::Char('4') => { self.process_sort = SortColumn::Name; true },
+            KeyCode::Char('r') | KeyCode::Char('R') => { self.process_reverse = !self.process_reverse; true },
+            _ => return,
+        };
+        if needs_sort {
+            self.sort_processes();
+        }
     }
 }
 
@@ -43,25 +120,24 @@ fn main() {
         .expect("Failed to create terminal");
     let mut app = App::new();
 
-    let mut last_update = std::time::Instant::now();
     loop {
+        let size = terminal.size().unwrap();
+        let layout = build_layout(ratatui::layout::Rect::new(0, 0, size.width, size.height));
+        app.process_page_size = layout.process.height.saturating_sub(4).max(1) as usize;
         terminal.draw(|f| draw(f, &app)).unwrap();
-        if event::poll(Duration::from_millis(100)).unwrap() {
+        if event::poll(Duration::from_millis(16)).unwrap() {
             if let Event::Key(KeyEvent { code, kind, modifiers, .. }) = event::read().unwrap() {
                 if kind == KeyEventKind::Press {
-                    if code == KeyCode::Char('q') || code == KeyCode::Esc {
+                    if code == KeyCode::Char('q') || code == KeyCode::Esc
+                        || (code == KeyCode::Char('c') && modifiers == KeyModifiers::CONTROL)
+                    {
                         break;
                     }
-                    if code == KeyCode::Char('c') && modifiers == KeyModifiers::CONTROL {
-                        break;
-                    }
+                    app.handle_process_key(code);
                 }
             }
         }
-        if last_update.elapsed() >= Duration::from_millis(2000) {
-            app.update();
-            last_update = std::time::Instant::now();
-        }
+        app.update();
     }
 
     restore_terminal();
@@ -97,7 +173,14 @@ fn draw(frame: &mut Frame, app: &App) {
     widgets::disk::render(frame, &app.sensors, chunks.disk);
     widgets::fans_temp::render(frame, &app.sensors, chunks.fans_temp);
     widgets::network::render(frame, &app.sensors, chunks.network);
-    widgets::process::render(frame, &app.sensors, chunks.process);
+    widgets::process::render(
+        frame,
+        &app.sensors,
+        chunks.process,
+        app.process_scroll,
+        app.process_sort,
+        app.process_reverse,
+    );
 }
 
 struct LayoutAreas {
@@ -129,9 +212,9 @@ fn build_main_layout(area: ratatui::layout::Rect) -> Vec<ratatui::layout::Rect> 
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(2),
-            Constraint::Min(1),
-            Constraint::Min(1),
-            Constraint::Min(1),
+            Constraint::Percentage(40),
+            Constraint::Percentage(30),
+            Constraint::Min(8),
         ])
         .split(area)
         .to_vec()
