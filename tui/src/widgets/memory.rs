@@ -26,11 +26,11 @@ pub fn render(frame: &mut Frame, sensors: &Sensors, area: Rect) {
 fn build_mem_block() -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Plain)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::DarkGray))
         .title(Span::styled(
             "  mem",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
         ))
         .title_alignment(Alignment::Left)
 }
@@ -40,7 +40,7 @@ fn build_mem_items(m: &crate::sensors::MemoryInfo) -> [(&str, f64, Color); 5] {
         ("Total",   m.total_gib,   Color::White),
         ("Used",    m.used_gib,    Color::Red),
         ("Avail",   m.available_gib, Color::Green),
-        ("Cached",  m.cached_gib,  Color::Yellow),
+        ("Cache",   m.cached_gib,  Color::Yellow),
         ("Free",    m.free_gib,    Color::Cyan),
     ]
 }
@@ -74,7 +74,7 @@ fn draw_mem_row(
 ) {
     let ratio = (value / total).clamp(0.0, 1.0);
     let parts = split_mem_layout(area);
-    render_mem_label(frame, parts[0], label, value, color);
+    render_mem_label(frame, parts[0], label, value, total, color);
     render_mem_gauge(frame, parts[1], ratio, color);
 }
 
@@ -88,9 +88,10 @@ fn split_mem_layout(area: Rect) -> Vec<Rect> {
 
 fn render_mem_label(
     frame: &mut Frame, area: Rect,
-    label: &str, value: f64, color: Color,
+    label: &str, value: f64, total: f64, color: Color,
 ) {
-    let text = format!("-{:6}: {:6.2} GiB", label, value);
+    let pct = (value / total * 100.0).round() as u64;
+    let text = format!("{:>5} {:5.1}G {:>3}%", label, value, pct);
     let widget = Paragraph::new(Span::styled(
         text,
         Style::default().fg(color).add_modifier(Modifier::BOLD),

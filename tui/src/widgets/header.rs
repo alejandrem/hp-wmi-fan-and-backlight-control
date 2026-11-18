@@ -21,8 +21,8 @@ pub fn render(frame: &mut Frame, sensors: &Sensors, area: Rect) {
 fn build_header_block() -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Plain)
-        .border_style(Style::default().fg(Color::DarkGray))
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Cyan))
         .title(Span::styled(
             " ALETOP ",
             Style::default()

@@ -5,8 +5,10 @@
 
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::symbols::Marker;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Sparkline};
+use ratatui::widgets::canvas::{Canvas, Line as CanvasLine, Points};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use ratatui::Frame;
 
 use crate::sensors::Sensors;
@@ -29,11 +31,11 @@ pub fn render(frame: &mut Frame, sensors: &Sensors, area: Rect) {
 fn build_net_block() -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Plain)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::DarkGray))
         .title(Span::styled(
             "  net",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
         ))
         .title_alignment(Alignment::Left)
 }
@@ -136,14 +138,29 @@ fn draw_upload_detail(
 fn draw_net_sparkline(
     frame: &mut Frame, _sensors: &Sensors, area: Rect,
 ) {
-    let combined = build_net_history();
-    if combined.is_empty() {
+    let history = build_net_history();
+    if history.is_empty() {
         return;
     }
-    let sparkline = Sparkline::default()
-        .data(&combined)
-        .style(Color::Cyan);
-    frame.render_widget(sparkline, area);
+    let values = super::graph::resample_history(&history, area.width);
+    let points: Vec<(f64, f64)> = values.iter().enumerate()
+        .map(|(i, value)| (i as f64, *value))
+        .collect();
+    let x_max = points.len().saturating_sub(1).max(1) as f64;
+    let y_max = values.iter().copied().fold(1.0_f64, f64::max);
+    let graph = Canvas::default()
+        .x_bounds([0.0, x_max])
+        .y_bounds([0.0, y_max])
+        .marker(Marker::Braille)
+        .paint(|ctx| {
+            for &(x, value) in &points {
+                ctx.draw(&CanvasLine::new(
+                    x, 0.0, x, value, Color::Cyan,
+                ));
+            }
+            ctx.draw(&Points::new(&points, Color::Cyan));
+        });
+    frame.render_widget(graph, area);
 }
 
 fn build_net_history() -> Vec<u64> {
@@ -159,11 +176,7 @@ fn build_net_history() -> Vec<u64> {
         let tx = tx_hist.get(i).copied().unwrap_or(0.0);
         (rx + tx) as u64
     }).collect();
-    reverse_for_right_to_left(&combined)
-}
-
-fn reverse_for_right_to_left(data: &[u64]) -> Vec<u64> {
-    data.iter().rev().copied().collect()
+    combined
 }
 
 fn format_rate(rate: f64) -> String {

@@ -24,11 +24,11 @@ pub fn render(frame: &mut Frame, sensors: &Sensors, area: Rect) {
 fn build_disk_block() -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Plain)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::DarkGray))
         .title(Span::styled(
             "  disks",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
         ))
         .title_alignment(Alignment::Left)
 }

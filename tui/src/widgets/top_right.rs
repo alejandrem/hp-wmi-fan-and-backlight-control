@@ -12,7 +12,7 @@ use crate::sensors::Sensors;
 pub fn render(frame: &mut Frame, sensors: &Sensors, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Plain)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::DarkGray));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -33,7 +33,7 @@ pub fn render(frame: &mut Frame, sensors: &Sensors, area: Rect) {
     draw_cpu_gauge(frame, sensors, rows[1]);
     draw_per_core_bars(frame, sensors, rows[2]);
     draw_load_avg(frame, sensors, rows[3]);
-    draw_gpu_bar(frame, rows[4], "GPUB", sensors.igpu_usage);
+    draw_gpu_bar(frame, rows[4], "GPU0", sensors.igpu_usage);
     draw_gpu_bar(frame, rows[5], "GPU1", sensors.gpu_usage);
 }
 
@@ -52,7 +52,7 @@ fn draw_cpu_header(frame: &mut Frame, s: &Sensors, area: Rect) {
         Span::raw("  "),
         Span::styled(
             temp,
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
         ),
     ]);
     let widget = Paragraph::new(text);

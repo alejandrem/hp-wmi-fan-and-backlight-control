@@ -1,11 +1,13 @@
 // ─── Top Left Widget ────────────────────────────────────────────────────
-// Large combined CPU+GPU sparkline, GPUB/GPU1 labels, and uptime.
-// Sparkline uses scaled 0-99 range for Ratatui Sparkline widget.
+// CPU history graph, GPU labels, and uptime.
+// Activity history is drawn with Braille dot markers for a btop-like graph.
 
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::symbols::Marker;
 use ratatui::text::Span;
-use ratatui::widgets::{Block, BorderType, Borders, LineGauge, Paragraph, Sparkline};
+use ratatui::widgets::canvas::{Canvas, Line as CanvasLine, Points};
+use ratatui::widgets::{Block, BorderType, Borders, LineGauge, Paragraph};
 use ratatui::Frame;
 
 use crate::sensors::Sensors;
@@ -15,25 +17,27 @@ pub fn render(frame: &mut Frame, sensors: &Sensors, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let rows = build_top_left_rows(inner);
-    render_title(frame, rows[0]);
-    draw_combined_sparkline(frame, sensors, rows[1]);
-    render_separator(frame, rows[2]);
-    render_gpu_labels(frame, sensors, rows[3]);
-    render_uptime(frame, sensors, rows[4]);
+    draw_combined_sparkline(frame, sensors, rows[0]);
+    render_separator(frame, rows[1]);
+    render_gpu_labels(frame, sensors, rows[2]);
+    render_uptime(frame, sensors, rows[3]);
 }
 
 fn build_top_left_block() -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Plain)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::DarkGray))
+        .title(Span::styled(
+            " cpu ",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ))
 }
 
 fn build_top_left_rows(inner: Rect) -> Vec<Rect> {
     Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
             Constraint::Min(2),
             Constraint::Length(1),
             Constraint::Length(4),
@@ -41,14 +45,6 @@ fn build_top_left_rows(inner: Rect) -> Vec<Rect> {
         ])
         .split(inner)
         .to_vec()
-}
-
-fn render_title(frame: &mut Frame, area: Rect) {
-    let title = Paragraph::new(Span::styled(
-        "  total-cpu-gpu",
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-    )).alignment(Alignment::Left);
-    frame.render_widget(title, area);
 }
 
 fn render_separator(frame: &mut Frame, area: Rect) {
@@ -102,40 +98,40 @@ fn render_uptime(frame: &mut Frame, sensors: &Sensors, area: Rect) {
 fn draw_combined_sparkline(
     frame: &mut Frame, _sensors: &Sensors, area: Rect,
 ) {
-    let combined = build_combined_history();
-    if combined.is_empty() {
+    let history = build_cpu_history();
+    if history.is_empty() {
         return;
     }
-    let sparkline = Sparkline::default()
-        .data(&combined)
-        .style(Color::Green)
-        .max(100);
-    frame.render_widget(sparkline, area);
+    let values = super::graph::resample_history(&history, area.width);
+    let points: Vec<(f64, f64)> = values.iter().enumerate()
+        .map(|(i, value)| (i as f64, *value))
+        .collect();
+    let x_max = points.len().saturating_sub(1).max(1) as f64;
+    // Laptop CPU/GPU usage is often far below 100%; a fixed 0..100 scale
+    // compresses normal activity into an almost invisible baseline.
+    let peak = history.iter().copied().max().unwrap_or(0).min(100) as f64;
+    let y_max = (((peak * 1.15 / 10.0).ceil() * 10.0).max(10.0)).min(100.0);
+    let graph = Canvas::default()
+        .x_bounds([0.0, x_max])
+        .y_bounds([0.0, y_max])
+        .marker(Marker::Braille)
+        .paint(|ctx| {
+            for &(x, value) in &points {
+                ctx.draw(&CanvasLine::new(
+                    x, 0.0, x, value, Color::Cyan,
+                ));
+            }
+            ctx.draw(&Points::new(&points, Color::Cyan));
+        });
+    frame.render_widget(graph, area);
 }
 
-fn build_combined_history() -> Vec<u64> {
+fn build_cpu_history() -> Vec<u64> {
     use crate::sensors::smoothing;
-    let cpu_hist = smoothing::cpu_usage_history();
-    let igpu_hist = smoothing::igpu_usage_history();
-    let gpu_hist = smoothing::gpu_usage_history();
-    let max_len = cpu_hist.len()
-        .max(igpu_hist.len())
-        .max(gpu_hist.len());
-    if max_len == 0 {
-        return Vec::new();
-    }
-    let combined: Vec<u64> = (0..max_len).map(|i| {
-        let cpu = cpu_hist.get(i).copied().unwrap_or(0.0);
-        let igpu = igpu_hist.get(i).copied().unwrap_or(0.0);
-        let gpu = gpu_hist.get(i).copied().unwrap_or(0.0);
-        let avg = (cpu + igpu + gpu) / 3.0;
-        avg as u64
-    }).collect();
-    reverse_for_right_to_left(&combined)
-}
-
-fn reverse_for_right_to_left(data: &[u64]) -> Vec<u64> {
-    data.iter().rev().copied().collect()
+    smoothing::cpu_usage_history()
+        .into_iter()
+        .map(|value| value.max(0.0) as u64)
+        .collect()
 }
 
 fn draw_gpu_label_with_bar(

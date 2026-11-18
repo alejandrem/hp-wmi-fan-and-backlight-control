@@ -1,16 +1,45 @@
 // ─── Process Widget ─────────────────────────────────────────────────────
-// Shows top processes table using Ratatui Table widget for proper
+// Shows the complete process list using a scrollable Ratatui Table widget for proper
 // column alignment: Pid, Program, User, Mem%, Cpu%.
 
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation,
+    ScrollbarState, Table,
+};
 use ratatui::Frame;
 
 use crate::sensors::Sensors;
 
-pub fn render(frame: &mut Frame, sensors: &Sensors, area: Rect) {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SortColumn {
+    Cpu,
+    Memory,
+    Pid,
+    Name,
+}
+
+impl SortColumn {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Cpu => "CPU",
+            Self::Memory => "MEM",
+            Self::Pid => "PID",
+            Self::Name => "NAME",
+        }
+    }
+}
+
+pub fn render(
+    frame: &mut Frame,
+    sensors: &Sensors,
+    area: Rect,
+    scroll: usize,
+    sort: SortColumn,
+    reverse: bool,
+) {
     let block = build_proc_block();
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -19,8 +48,8 @@ pub fn render(frame: &mut Frame, sensors: &Sensors, area: Rect) {
         return;
     }
     let sections = build_proc_sections(inner);
-    render_proc_header(frame, sections.header, procs);
-    render_proc_table(frame, sections.table, procs);
+    render_proc_header(frame, sections.header, procs.len(), sort, reverse);
+    render_proc_table(frame, sections.table, procs, scroll);
 }
 
 struct ProcSections {
@@ -45,43 +74,78 @@ fn build_proc_sections(inner: Rect) -> ProcSections {
 fn build_proc_block() -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Plain)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::DarkGray))
         .title(Span::styled(
-            "  proc",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            "  processes",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
         ))
         .title_alignment(Alignment::Left)
 }
 
 fn render_proc_header(
-    frame: &mut Frame, area: Rect, procs: &[crate::sensors::ProcessInfo],
+    frame: &mut Frame,
+    area: Rect,
+    process_count: usize,
+    sort: SortColumn,
+    reverse: bool,
 ) {
-    let hints = build_header_hints(procs);
+    let hints = build_header_hints(process_count, sort, reverse);
     let widget = Paragraph::new(hints)
         .style(Style::default().fg(Color::Gray));
     frame.render_widget(widget, area);
 }
 
-fn build_header_hints(procs: &[crate::sensors::ProcessInfo]) -> Line<'_> {
+fn build_header_hints(process_count: usize, sort: SortColumn, reverse: bool) -> Line<'static> {
+    let descending = matches!(sort, SortColumn::Cpu | SortColumn::Memory) ^ reverse;
+    let direction = if descending { "↓" } else { "↑" };
     Line::from(vec![
-        Span::styled("filter", Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw("                        "),
-        Span::styled(format!("{} procs", procs.len()), Style::default()),
+        Span::styled(
+            format!("{}{}", sort.label(), direction),
+            Style::default().fg(Color::Gray).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled("1 CPU 2 MEM 3 PID 4 NAME  R flip", Style::default().fg(Color::DarkGray)),
+        Span::raw("  "),
+        Span::styled(format!("{} tasks", process_count), Style::default().fg(Color::Cyan)),
+        Span::raw("  "),
+        Span::styled("↑↓ PgUp/Dn", Style::default().fg(Color::DarkGray)),
     ])
 }
 
 fn render_proc_table(
-    frame: &mut Frame, area: Rect, procs: &[crate::sensors::ProcessInfo],
+    frame: &mut Frame,
+    area: Rect,
+    procs: &[crate::sensors::ProcessInfo],
+    scroll: usize,
 ) {
-    let widths = build_column_widths(area.width);
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let table_width = area.width.saturating_sub(1);
+    let table_area = Rect { width: table_width, ..area };
+    let widths = build_column_widths(table_width);
     let header_row = build_header_row(&widths);
-    let data_rows = build_data_rows(procs, &widths);
+    let visible_rows = table_area.height.saturating_sub(1) as usize;
+    let max_scroll = procs.len().saturating_sub(visible_rows);
+    let scroll = scroll.min(max_scroll);
+    let end = scroll.saturating_add(visible_rows).min(procs.len());
+    let visible = &procs[scroll.min(procs.len())..end];
+    let data_rows = build_data_rows(visible, &widths, table_width);
     let table = Table::default()
         .widths(&widths)
         .header(header_row)
         .rows(data_rows);
-    frame.render_widget(table, area);
+    frame.render_widget(table, table_area);
+
+    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .thumb_style(Style::default().fg(Color::Cyan))
+        .track_style(Style::default().fg(Color::DarkGray));
+    let mut state = ScrollbarState::default()
+        .content_length(procs.len())
+        .viewport_content_length(visible_rows)
+        .position(scroll);
+    frame.render_stateful_widget(scrollbar, area, &mut state);
 }
 
 fn build_column_widths(width: u16) -> [Constraint; 5] {
@@ -105,7 +169,7 @@ fn build_header_row(_widths: &[Constraint; 5]) -> Row<'_> {
         Cell::from(" Pid").style(header_style()),
         Cell::from(" Program").style(header_style()),
         Cell::from(" User").style(header_style()),
-        Cell::from(" Mem%").style(header_style()),
+        Cell::from(" Mem").style(header_style()),
         Cell::from(" Cpu%").style(header_style()),
     ];
     Row::new(cells).style(header_style())
@@ -120,10 +184,12 @@ fn header_style() -> Style {
 fn build_data_rows<'a>(
     procs: &'a [crate::sensors::ProcessInfo],
     _widths: &'a [Constraint; 5],
+    area_width: u16,
 ) -> Vec<Row<'a>> {
+    let program_width = area_width.saturating_sub(30).max(4) as usize;
     procs.iter().map(|p| {
         let mem_str = format_mem(p.mem_mb);
-        let name = truncate(&p.name, 20);
+        let name = truncate(&p.name, program_width);
         let cells = vec![
             Cell::from(format!("{:<6}", p.pid)).style(Style::default().fg(Color::White)),
             Cell::from(name).style(Style::default().fg(Color::Cyan)),
@@ -144,9 +210,11 @@ fn format_mem(mb: f64) -> String {
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
+    let char_count = s.chars().count();
+    if char_count <= max {
         s.to_string()
     } else {
-        format!("{}..", &s[..max.saturating_sub(2)])
+        let prefix: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{}…", prefix)
     }
 }
