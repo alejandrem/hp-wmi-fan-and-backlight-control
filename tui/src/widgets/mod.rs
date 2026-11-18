@@ -1,5 +1,6 @@
 // ─── Widgets Module ─────────────────────────────────────────────────────
 
+mod graph;
 pub mod disk;
 pub mod fans_temp;
 pub mod header;
