@@ -2,6 +2,7 @@
 // Combined fans, temperatures, and power readings.
 
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::Position;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, BorderType, Borders, LineGauge, Paragraph};
@@ -9,11 +10,30 @@ use ratatui::Frame;
 
 use crate::sensors::Sensors;
 
-pub fn render(frame: &mut Frame, sensors: &Sensors, area: Rect) {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FanControlButton {
+    Auto,
+    Max,
+    RpmDown,
+    RpmInput,
+    RpmUp,
+    ApplyRpm,
+}
+
+pub fn render(
+    frame: &mut Frame,
+    sensors: &Sensors,
+    area: Rect,
+    rpm_text: &str,
+    rpm_editing: bool,
+    message: &str,
+) {
     let block = build_fans_block();
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let rows = build_fans_rows(inner);
+    render_controls(frame, rows.first().copied(), rpm_text, rpm_editing);
+    render_control_hint(frame, rows.get(1).copied(), message);
     render_fans(frame, &rows, sensors);
     render_separator(frame, &rows);
     render_temps(frame, &rows, sensors);
@@ -32,7 +52,7 @@ fn build_fans_block() -> Block<'static> {
 }
 
 fn build_fans_rows(inner: Rect) -> Vec<Rect> {
-    let total_rows = 9;
+    let total_rows = 11;
     let row_h = calc_row_height(inner.height, total_rows);
     Layout::default()
         .direction(Direction::Vertical)
@@ -45,6 +65,75 @@ fn build_fans_rows(inner: Rect) -> Vec<Rect> {
         .to_vec()
 }
 
+fn control_button_areas(area: Rect) -> Vec<Rect> {
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(6), Constraint::Length(1),
+            Constraint::Length(5), Constraint::Length(1),
+            Constraint::Length(3), Constraint::Length(1),
+            Constraint::Length(11), Constraint::Length(1),
+            Constraint::Length(3), Constraint::Length(1),
+            Constraint::Length(5),
+        ])
+        .split(area)
+        .to_vec()
+}
+
+pub fn hit_test_control(area: Rect, x: u16, y: u16) -> Option<FanControlButton> {
+    let block = build_fans_block();
+    let rows = build_fans_rows(block.inner(area));
+    let control_row = rows.first().copied()?;
+    let buttons = control_button_areas(control_row);
+    let index = buttons.iter().enumerate().find_map(|(index, button)| {
+        let point = Position::new(x, y);
+        button.contains(point).then_some(index)
+    })?;
+    match index {
+        0 => Some(FanControlButton::Auto),
+        2 => Some(FanControlButton::Max),
+        4 => Some(FanControlButton::RpmDown),
+        6 => Some(FanControlButton::RpmInput),
+        8 => Some(FanControlButton::RpmUp),
+        10 => Some(FanControlButton::ApplyRpm),
+        _ => None,
+    }
+}
+
+fn render_controls(frame: &mut Frame, area: Option<Rect>, rpm_text: &str, rpm_editing: bool) {
+    let Some(area) = area else { return };
+    let parts = control_button_areas(area);
+    let labels = ["[AUTO]", "[MAX]", "[-]", "[RPM]", "[+]", "[SET]"];
+    let indices = [0, 2, 4, 6, 8, 10];
+    for (button, index) in indices.into_iter().enumerate() {
+        let Some(rect) = parts.get(index).copied() else { continue };
+        let (label, color) = match button {
+            0 => (labels[button].to_string(), Color::Green),
+            1 => (labels[button].to_string(), Color::Red),
+            2 => (labels[button].to_string(), Color::Cyan),
+            3 => (format!("[RPM:{}]", rpm_text), if rpm_editing { Color::Yellow } else { Color::Cyan }),
+            4 => (labels[button].to_string(), Color::Cyan),
+            _ => (labels[button].to_string(), Color::Yellow),
+        };
+        let style = Style::default().fg(Color::Black).bg(color).add_modifier(Modifier::BOLD);
+        frame.render_widget(Paragraph::new(label).alignment(Alignment::Center).style(style), rect);
+    }
+}
+
+fn render_control_hint(frame: &mut Frame, area: Option<Rect>, message: &str) {
+    let Some(area) = area else { return };
+    let text = if message.is_empty() {
+        "F1 Auto  F2 Max  F3 edit RPM  Enter apply".to_string()
+    } else {
+        message.to_string()
+    };
+    let widget = Paragraph::new(Span::styled(
+        text,
+        Style::default().fg(if message.is_empty() { Color::DarkGray } else { Color::Cyan }),
+    ));
+    frame.render_widget(widget, area);
+}
+
 fn calc_row_height(height: u16, total_rows: usize) -> u16 {
     if height as usize >= total_rows {
         1
@@ -54,12 +143,12 @@ fn calc_row_height(height: u16, total_rows: usize) -> u16 {
 }
 
 fn render_fans(frame: &mut Frame, rows: &[Rect], sensors: &Sensors) {
-    draw_fan_row(frame, rows, 0, "Fan 1", sensors.fan1_rpm, 4300.0);
-    draw_fan_row(frame, rows, 1, "Fan 2", sensors.fan2_rpm, 4100.0);
+    draw_fan_row(frame, rows, 2, "Fan 1", sensors.fan1_rpm, 4300.0);
+    draw_fan_row(frame, rows, 3, "Fan 2", sensors.fan2_rpm, 4100.0);
 }
 
 fn render_separator(frame: &mut Frame, rows: &[Rect]) {
-    if let Some(sep) = rows.get(2) {
+    if let Some(sep) = rows.get(4) {
         let widget = Paragraph::new(Span::styled(
             "--------------------------------------------------------",
             Style::default().fg(Color::DarkGray),
@@ -71,7 +160,7 @@ fn render_separator(frame: &mut Frame, rows: &[Rect]) {
 fn render_temps(frame: &mut Frame, rows: &[Rect], sensors: &Sensors) {
     let temps = build_temp_list(sensors);
     for (i, (label, temp, power)) in temps.iter().enumerate() {
-        if let Some(row) = rows.get(3 + i) {
+        if let Some(row) = rows.get(5 + i) {
             draw_temp_row(frame, *row, label, *temp, *power);
         }
     }
