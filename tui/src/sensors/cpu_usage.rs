@@ -1,6 +1,11 @@
 // ─── CPU Usage Calculator ───────────────────────────────────────────────
-// Reads /proc/stat twice with a short interval and calculates CPU usage %.
+// Calculates CPU usage from /proc/stat counter differences between refreshes.
 // Detects the number of logical cores and model name from /proc/cpuinfo.
+
+use std::sync::{Mutex, OnceLock};
+
+static CPU_PREVIOUS: OnceLock<Mutex<Option<(u64, u64)>>> = OnceLock::new();
+static CORE_PREVIOUS: OnceLock<Mutex<Option<Vec<(u64, u64)>>>> = OnceLock::new();
 
 /// Returns (total_cores, cpu_usage_percent, cpu_model_name).
 /// cpu_usage_percent is 0..100 across all cores (average).
@@ -56,31 +61,27 @@ fn read_cpu_stat() -> Option<(u64, u64)> {
 }
 
 fn calculate_usage() -> f64 {
-    let s1 = match read_cpu_stat() {
-        Some(v) => v,
-        None => return 0.0,
-    };
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    let s2 = match read_cpu_stat() {
-        Some(v) => v,
-        None => return 0.0,
-    };
-    let delta_used = s2.0.saturating_sub(s1.0);
-    let delta_total = s2.1.saturating_sub(s1.1);
-    if delta_total > 0 {
-        (delta_used as f64 / delta_total as f64) * 100.0
-    } else {
-        0.0
-    }
+    let Some(current) = read_cpu_stat() else { return 0.0 };
+    let previous = CPU_PREVIOUS.get_or_init(|| Mutex::new(None));
+    let mut previous = previous.lock().unwrap_or_else(|e| e.into_inner());
+    let usage = previous.map(|old| calc_usage_delta(old, current)).unwrap_or(0.0);
+    *previous = Some(current);
+    usage
 }
 
 /// Returns per-core usage percentages for each logical core.
 /// Reads cpu0, cpu1, cpu2, ... from /proc/stat.
 pub fn read_per_core_usage() -> Vec<f64> {
     let cores = count_cores();
-    let snapshots1 = read_all_core_stats(cores);
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    calc_per_core_usage(cores, snapshots1)
+    let current = read_all_core_stats(cores);
+    let previous = CORE_PREVIOUS.get_or_init(|| Mutex::new(None));
+    let mut previous = previous.lock().unwrap_or_else(|e| e.into_inner());
+    let usage = match previous.as_ref() {
+        Some(old) => calc_per_core_usage(cores, old, &current),
+        None => vec![0.0; cores],
+    };
+    *previous = Some(current);
+    usage
 }
 
 fn read_all_core_stats(cores: usize) -> Vec<(u64, u64)> {
@@ -88,11 +89,13 @@ fn read_all_core_stats(cores: usize) -> Vec<(u64, u64)> {
 }
 
 fn calc_per_core_usage(
-    cores: usize, snapshots1: Vec<(u64, u64)>,
+    cores: usize,
+    snapshots1: &[(u64, u64)],
+    snapshots2: &[(u64, u64)],
 ) -> Vec<f64> {
     (0..cores).map(|i| {
-        let s2 = read_core_stat(i).unwrap_or((0, 0));
-        let s1 = snapshots1[i];
+        let Some(&s2) = snapshots2.get(i) else { return 0.0 };
+        let Some(&s1) = snapshots1.get(i) else { return 0.0 };
         calc_usage_delta(s1, s2)
     }).collect()
 }
