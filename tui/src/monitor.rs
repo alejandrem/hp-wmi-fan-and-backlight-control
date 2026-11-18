@@ -94,7 +94,9 @@ impl App {
         let (sensor_tx, sensor_rx) = mpsc::sync_channel(1);
         let (fan_result_tx, fan_result_rx) = mpsc::channel();
         std::thread::spawn(move || {
-            let interval = Duration::from_millis(500);
+            // Keep the screen responsive while avoiding a full sensor and
+            // /proc process scan twice per second.
+            let interval = Duration::from_secs(1);
             if sensor_tx.send(sensors::Sensors::read()).is_err() {
                 return;
             }
@@ -135,7 +137,7 @@ impl App {
         app
     }
 
-    fn update(&mut self) {
+    fn update(&mut self) -> bool {
         let mut changed = false;
         while let Ok(sensors) = self.sensor_rx.try_recv() {
             self.sensors = sensors;
@@ -148,6 +150,7 @@ impl App {
             );
         }
         while let Ok(result) = self.fan_result_rx.try_recv() {
+            changed = true;
             match result {
                 FanCommandResult::NeedPassword(command) => {
                     self.fan_command_running = false;
@@ -177,7 +180,9 @@ impl App {
             notice.expires_at.is_some_and(|expires_at| Instant::now() >= expires_at)
         }) {
             self.fan_modal = None;
+            changed = true;
         }
+        changed
     }
 
     fn request_fan_command(&mut self, command: FanCommand) {
@@ -431,26 +436,36 @@ fn main() {
     let mut terminal = Terminal::new(backend)
         .expect("Failed to create terminal");
     let mut app = App::new();
+    let mut needs_draw = true;
+    let mut next_modal_draw = Instant::now();
 
     loop {
-        let size = terminal.size().unwrap();
-        let layout = build_layout(ratatui::layout::Rect::new(0, 0, size.width, size.height));
-        app.process_page_size = layout.process.height.saturating_sub(4).max(1) as usize;
-        terminal.draw(|f| draw(f, &app)).unwrap();
-        if event::poll(Duration::from_millis(16)).unwrap() {
+        if needs_draw {
+            let size = terminal.size().unwrap();
+            let layout = build_layout(ratatui::layout::Rect::new(0, 0, size.width, size.height));
+            app.process_page_size = layout.process.height.saturating_sub(4).max(1) as usize;
+            terminal.draw(|f| draw(f, &app)).unwrap();
+            needs_draw = false;
+        }
+        if event::poll(Duration::from_millis(50)).unwrap() {
             match event::read().unwrap() {
                 Event::Key(KeyEvent { code, kind, modifiers, .. })
                     if kind == KeyEventKind::Press =>
                 {
                     match app.handle_key(code, modifiers) {
                         KeyAction::Quit => break,
-                        KeyAction::Continue => {}
-                        KeyAction::Fan(command) => app.request_fan_command(command),
+                        KeyAction::Continue => needs_draw = true,
+                        KeyAction::Fan(command) => {
+                            app.request_fan_command(command);
+                            needs_draw = true;
+                        }
                     }
                 }
                 Event::Mouse(mouse)
                     if mouse.kind == MouseEventKind::Down(MouseButton::Left) =>
                 {
+                    let size = terminal.size().unwrap();
+                    let layout = build_layout(ratatui::layout::Rect::new(0, 0, size.width, size.height));
                     if app.fan_modal.is_none() {
                         if let Some(button) = widgets::fans_temp::hit_test_control(
                             layout.fans_temp,
@@ -462,11 +477,19 @@ fn main() {
                             }
                         }
                     }
+                    needs_draw = true;
                 }
+                Event::Resize(_, _) => needs_draw = true,
                 _ => {}
             }
         }
-        app.update();
+        if app.update() {
+            needs_draw = true;
+        }
+        if app.fan_modal.is_some() && Instant::now() >= next_modal_draw {
+            needs_draw = true;
+            next_modal_draw = Instant::now() + Duration::from_secs(1);
+        }
     }
 
     restore_terminal();

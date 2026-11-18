@@ -6,7 +6,7 @@
 use std::sync::{Mutex, OnceLock};
 use std::collections::HashMap;
 
-const HISTORY_LEN: usize = 60; // ~2 minutes at 2s polling
+const HISTORY_LEN: usize = 60; // One minute at the 1s sensor interval.
 
 struct Smoother {
     value: Option<f64>,
@@ -82,6 +82,7 @@ pub fn memory_history(index: usize) -> Vec<f64> {
 pub fn record_disk_usage(disks: &[(String, f64)]) {
     let histories = DISK_HISTORY.get_or_init(|| Mutex::new(HashMap::new()));
     let mut histories = histories.lock().unwrap();
+    histories.retain(|mount, _| disks.iter().any(|(current, _)| current == mount));
     for (mount, percent) in disks {
         let history = histories.entry(mount.clone()).or_default();
         history.push(percent.clamp(0.0, 100.0));
@@ -124,6 +125,15 @@ pub fn temperature_history(index: usize) -> Vec<f64> {
 pub fn record_usage_histories(cpu: f64, cores: &[f64], igpu: Option<f64>, gpu: Option<f64>) {
     let histories = USAGE_HISTORY.get_or_init(|| Mutex::new(HashMap::new()));
     let mut histories = histories.lock().unwrap();
+    histories.retain(|key, _| match key.as_str() {
+        "cpu" => true,
+        "gpu0" => igpu.is_some(),
+        "gpu1" => gpu.is_some(),
+        key if key.starts_with("core:") => key[5..]
+            .parse::<usize>()
+            .is_ok_and(|index| index < cores.len()),
+        _ => false,
+    });
     push_usage_sample(&mut histories, "cpu", cpu);
     for (index, usage) in cores.iter().enumerate() {
         push_usage_sample(&mut histories, &format!("core:{index}"), *usage);

@@ -3,10 +3,15 @@
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 static CPU_SNAPSHOT: OnceLock<Mutex<(u64, HashMap<u32, (u64, u64)>)>> = OnceLock::new();
 static USER_NAMES: OnceLock<HashMap<u32, String>> = OnceLock::new();
+static PAGE_SIZE: OnceLock<u64> = OnceLock::new();
+static PROCESS_CACHE: OnceLock<Mutex<(Option<Instant>, Vec<ProcessInfo>)>> = OnceLock::new();
+const PROCESS_CACHE_INTERVAL: Duration = Duration::from_secs(2);
 
+#[derive(Clone)]
 pub struct ProcessInfo {
     pub pid: u32,
     pub name: String,
@@ -18,13 +23,20 @@ pub struct ProcessInfo {
 }
 
 pub fn read_processes() -> Vec<ProcessInfo> {
+    let cache = PROCESS_CACHE.get_or_init(|| Mutex::new((None, Vec::new())));
+    let mut cache = cache.lock().unwrap_or_else(|error| error.into_inner());
+    if cache.0.is_some_and(|last_read| last_read.elapsed() < PROCESS_CACHE_INTERVAL) {
+        return cache.1.clone();
+    }
     let total_mem = get_total_mem_kb();
-    collect_processes(total_mem)
+    let processes = collect_processes(total_mem);
+    cache.0 = Some(Instant::now());
+    cache.1.clone_from(&processes);
+    processes
 }
 
 fn collect_processes(total_mem: f64) -> Vec<ProcessInfo> {
     let total_ticks = read_total_cpu_ticks();
-    let cpu_count = get_num_cpus().max(1) as f64;
     let snapshot = CPU_SNAPSHOT.get_or_init(|| Mutex::new((0, HashMap::new())));
     let mut previous = snapshot.lock().unwrap_or_else(|e| e.into_inner());
     let total_delta = total_ticks.saturating_sub(previous.0);
@@ -40,7 +52,9 @@ fn collect_processes(total_mem: f64) -> Vec<ProcessInfo> {
         let cpu_pct = previous.1.get(&pid)
             .filter(|(start, _)| *start == stat.starttime)
             .map(|(_, old_ticks)| if total_delta == 0 { 0.0 } else {
-                ticks.saturating_sub(*old_ticks) as f64 / total_delta as f64 * cpu_count * 100.0
+                // Normalize to total system capacity, matching btop's default
+                // process percentage instead of reporting one core as 100%.
+                ticks.saturating_sub(*old_ticks) as f64 / total_delta as f64 * 100.0
             }).unwrap_or(0.0);
         current.insert(pid, (stat.starttime, ticks));
         let mem_kb = calc_mem_kb(&stat);
@@ -66,7 +80,7 @@ fn read_total_cpu_ticks() -> u64 {
 }
 
 fn calc_mem_kb(stat: &ProcStat) -> f64 {
-    let page_size = get_page_size();
+    let page_size = *PAGE_SIZE.get_or_init(|| unsafe { libc::sysconf(libc::_SC_PAGESIZE) as u64 });
     (stat.rss as f64 * page_size as f64) / 1024.0
 }
 
@@ -85,26 +99,28 @@ fn read_proc_stat(pid: u32) -> Option<ProcStat> {
 
 fn parse_stat_fields(content: &str) -> Option<Vec<u64>> {
     let close_paren = content.rfind(')')?;
-    let fields: Vec<u64> = content[close_paren + 2..]
-        .split_whitespace()
-        .filter_map(|f| f.parse().ok())
-        .collect();
-    // The state token (field 3) is non-numeric and is skipped. The remaining
-    // vector starts at field 4, so utime/stime/starttime/rss are 10/11/18/20.
-    if fields.len() >= 21 {
-        Some(fields)
-    } else {
-        None
+    let fields: Vec<&str> = content[close_paren + 2..].split_whitespace().collect();
+    // This slice begins at field 3 (state), so after skipping it, the numeric
+    // slice begins at field 4. Parse the needed positions directly: fields
+    // such as cutime, priority, and nice can be negative and must not shift RSS.
+    if fields.len() < 22 {
+        return None;
     }
+    Some(vec![
+        fields[11].parse().ok()?, // utime (field 14)
+        fields[12].parse().ok()?, // stime (field 15)
+        fields[19].parse().ok()?, // starttime (field 22)
+        fields[21].parse::<i64>().ok()?.max(0) as u64, // rss pages (field 24)
+    ])
 }
 
 fn build_proc_stat(fields: &[u64]) -> Option<ProcStat> {
-    if fields.len() >= 21 {
+    if fields.len() >= 4 {
         Some(ProcStat {
-            utime: fields[10],
-            stime: fields[11],
-            starttime: fields[18],
-            rss: fields[20],
+            utime: fields[0],
+            stime: fields[1],
+            starttime: fields[2],
+            rss: fields[3],
         })
     } else {
         None
@@ -132,17 +148,6 @@ fn get_total_mem_kb() -> f64 {
             None
         })
         .unwrap_or(1.0)
-}
-
-fn get_num_cpus() -> usize {
-    std::fs::read_to_string("/proc/cpuinfo")
-        .ok()
-        .map(|content| content.lines().filter(|l| l.starts_with("processor\t")).count())
-        .unwrap_or(1)
-}
-
-fn get_page_size() -> u64 {
-    unsafe { libc::sysconf(libc::_SC_PAGESIZE) as u64 }
 }
 
 fn get_user_for_pid(pid: u32) -> Option<String> {

@@ -203,9 +203,9 @@ fn build_data_rows<'a>(
 
 fn format_mem(mb: f64) -> String {
     if mb >= 1024.0 {
-        format!("{:.0}G", mb / 1024.0)
+        format!("{:.1}G", mb / 1024.0)
     } else {
-        format!("{:.0}M", mb)
+        format!("{:.1}M", mb)
     }
 }
 

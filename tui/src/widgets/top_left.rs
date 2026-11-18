@@ -7,7 +7,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::Marker;
 use ratatui::text::Span;
 use ratatui::widgets::canvas::{Canvas, Line as CanvasLine, Points};
-use ratatui::widgets::{Block, BorderType, Borders, LineGauge, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use ratatui::Frame;
 
 use crate::sensors::Sensors;
@@ -70,12 +70,12 @@ fn render_gpu_labels(frame: &mut Frame, sensors: &Sensors, area: Rect) {
     draw_gpu_label_with_bar(
         frame, rows[0], "GPUB", sensors.igpu_usage,
     );
-    draw_gpu_bar(frame, rows[1], sensors.igpu_usage);
+    draw_gpu_bar(frame, rows[1], sensors.igpu_usage, "gpu0");
     let rows = gpu_label_rows(parts[1]);
     draw_gpu_label_with_bar(
         frame, rows[0], "GPU1", sensors.gpu_usage,
     );
-    draw_gpu_bar(frame, rows[1], sensors.gpu_usage);
+    draw_gpu_bar(frame, rows[1], sensors.gpu_usage, "gpu1");
 }
 
 fn gpu_label_rows(area: Rect) -> Vec<Rect> {
@@ -146,14 +146,21 @@ fn draw_gpu_label_with_bar(
     frame.render_widget(widget, area);
 }
 
-fn draw_gpu_bar(frame: &mut Frame, area: Rect, usage: Option<f64>) {
-    let pct = usage.unwrap_or(0.0) as f64;
-    let bar = LineGauge::default()
-        .filled_symbol("█")
-        .unfilled_symbol("░")
-        .ratio(pct / 100.0)
-        .style(gpu_label_color(usage));
-    frame.render_widget(bar, area);
+fn draw_gpu_bar(frame: &mut Frame, area: Rect, usage: Option<f64>, history_key: &str) {
+    if area.is_empty() {
+        return;
+    }
+    let history = crate::sensors::smoothing::usage_history(history_key);
+    let points = super::graph::vertical_dot_history(&history, area.width);
+    if points.is_empty() {
+        return;
+    }
+    let graph = Canvas::default()
+        .x_bounds([0.0, area.width as f64])
+        .y_bounds([0.0, 4.0])
+        .marker(Marker::Braille)
+        .paint(|context| context.draw(&Points::new(&points, gpu_label_color(usage))));
+    frame.render_widget(graph, area);
 }
 
 fn gpu_label_text(label: &str, usage: Option<f64>) -> String {

@@ -6,6 +6,7 @@ use std::sync::{Mutex, OnceLock};
 
 static CPU_PREVIOUS: OnceLock<Mutex<Option<(u64, u64)>>> = OnceLock::new();
 static CORE_PREVIOUS: OnceLock<Mutex<Option<Vec<(u64, u64)>>>> = OnceLock::new();
+static CPU_INFO: OnceLock<(usize, String)> = OnceLock::new();
 
 /// Returns (total_cores, cpu_usage_percent, cpu_model_name).
 /// cpu_usage_percent is 0..100 across all cores (average).
@@ -17,29 +18,28 @@ pub fn read_cpu_usage() -> (usize, f64, String) {
 }
 
 fn count_cores() -> usize {
-    if let Ok(content) = std::fs::read_to_string("/proc/cpuinfo") {
-        content.lines().filter(|l| l.starts_with("processor\t")).count()
-    } else {
-        1
-    }
+    cpu_info().0
 }
 
 fn cpu_model() -> String {
-    if let Ok(content) = std::fs::read_to_string("/proc/cpuinfo") {
-        for line in content.lines() {
-            if line.starts_with("model name") {
-                let name = line.split(':').last().map(|s| s.trim().to_string()).unwrap_or_default();
-                // Shorten: "AMD Ryzen 5 8645HS w/ Radeon 760M Graphics" -> "Ryzen 5 8645HS"
-                if let Some(short) = name.strip_prefix("AMD ") {
-                    // Take up to "w/" or end
-                    let end = short.find(" w/").unwrap_or(short.len());
-                    return short[..end].to_string();
-                }
-                return name;
-            }
-        }
-    }
-    "CPU".into()
+    cpu_info().1.clone()
+}
+
+fn cpu_info() -> &'static (usize, String) {
+    CPU_INFO.get_or_init(|| {
+        let content = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
+        let cores = content.lines().filter(|line| line.starts_with("processor\t")).count().max(1);
+        let model = content.lines()
+            .find(|line| line.starts_with("model name"))
+            .and_then(|line| line.split(':').nth(1))
+            .map(str::trim)
+            .map(|name| {
+                let name = name.strip_prefix("AMD ").unwrap_or(name);
+                name.split(" w/").next().unwrap_or(name).to_string()
+            })
+            .unwrap_or_else(|| "CPU".into());
+        (cores, model)
+    })
 }
 
 fn read_cpu_stat() -> Option<(u64, u64)> {
@@ -70,7 +70,7 @@ fn calculate_usage() -> f64 {
 }
 
 /// Returns per-core usage percentages for each logical core.
-/// Reads cpu0, cpu1, cpu2, ... from /proc/stat.
+/// Reads cpu0, cpu1, cpu2, ... together from one /proc/stat snapshot.
 pub fn read_per_core_usage() -> Vec<f64> {
     let cores = count_cores();
     let current = read_all_core_stats(cores);
@@ -85,7 +85,18 @@ pub fn read_per_core_usage() -> Vec<f64> {
 }
 
 fn read_all_core_stats(cores: usize) -> Vec<(u64, u64)> {
-    (0..cores).map(|i| read_core_stat(i).unwrap_or((0, 0))).collect()
+    let Some(content) = std::fs::read_to_string("/proc/stat").ok() else {
+        return vec![(0, 0); cores];
+    };
+    let mut stats = vec![(0, 0); cores];
+    for line in content.lines() {
+        let Some(number) = line.strip_prefix("cpu") else { continue };
+        let Ok(index) = number.split_whitespace().next().unwrap_or("").parse::<usize>() else { continue };
+        if index < cores {
+            stats[index] = parse_cpu_line(line).unwrap_or((0, 0));
+        }
+    }
+    stats
 }
 
 fn calc_per_core_usage(
@@ -110,9 +121,7 @@ fn calc_usage_delta(s1: (u64, u64), s2: (u64, u64)) -> f64 {
     }
 }
 
-fn read_core_stat(core: usize) -> Option<(u64, u64)> {
-    let content = std::fs::read_to_string("/proc/stat").ok()?;
-    let line = content.lines().find(|l| l.starts_with(&format!("cpu{}", core)))?;
+fn parse_cpu_line(line: &str) -> Option<(u64, u64)> {
     let fields: Vec<u64> = line.split_whitespace().skip(1).filter_map(|f| f.parse().ok()).collect();
     if fields.len() >= 4 {
         let used = fields[0] + fields[1] + fields[2]
