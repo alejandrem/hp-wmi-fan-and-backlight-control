@@ -3,11 +3,13 @@
 
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::symbols::Marker;
 use ratatui::text::Span;
-use ratatui::widgets::{Block, BorderType, Borders, LineGauge, Paragraph};
+use ratatui::widgets::canvas::{Canvas, Points};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use ratatui::Frame;
 
-use crate::sensors::Sensors;
+use crate::sensors::{smoothing, Sensors};
 
 pub fn render(frame: &mut Frame, sensors: &Sensors, area: Rect) {
     let block = build_disk_block();
@@ -34,7 +36,7 @@ fn build_disk_block() -> Block<'static> {
 }
 
 fn build_disk_rows(inner: Rect, disk_count: usize) -> Vec<Rect> {
-    let rows_count = disk_count * 2;
+    let rows_count = disk_count * 3;
     let row_h = calc_disk_row_height(inner.height, rows_count);
     Layout::default()
         .direction(Direction::Vertical)
@@ -59,12 +61,13 @@ fn render_disk_list(
     frame: &mut Frame, rows: &[Rect], disks: &[crate::sensors::DiskInfo],
 ) {
     for (i, disk) in disks.iter().enumerate() {
-        let idx = i * 2;
+        let idx = i * 3;
         if let Some(row) = rows.get(idx) {
             draw_disk_label(frame, *row, disk);
         }
-        if let Some(row) = rows.get(idx + 1) {
-            draw_disk_bar(frame, *row, disk);
+        if let (Some(first), Some(second)) = (rows.get(idx + 1), rows.get(idx + 2)) {
+            let chart_area = Rect::new(first.x, first.y, first.width, first.height.saturating_add(second.height));
+            draw_disk_history(frame, chart_area, disk);
         }
     }
 }
@@ -79,22 +82,39 @@ fn draw_disk_label(frame: &mut Frame, area: Rect, disk: &crate::sensors::DiskInf
     frame.render_widget(widget, area);
 }
 
-fn draw_disk_bar(frame: &mut Frame, area: Rect, disk: &crate::sensors::DiskInfo) {
-    let ratio = (disk.usage_pct / 100.0).clamp(0.0, 1.0);
-    let color = if disk.usage_pct > 90.0 {
+fn draw_disk_history(frame: &mut Frame, area: Rect, disk: &crate::sensors::DiskInfo) {
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(5), Constraint::Min(1)])
+        .split(area);
+    let color = disk_usage_color(disk.usage_pct);
+    let value = Paragraph::new(Span::styled(
+        format!("{:>3.0}%", disk.usage_pct),
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
+    ));
+    frame.render_widget(value, columns[0]);
+
+    let history = smoothing::disk_history(&disk.mount);
+    let points = super::graph::vertical_dot_history(&history, columns[1].width);
+    if columns[1].is_empty() || points.is_empty() {
+        return;
+    }
+    let chart = Canvas::default()
+        .x_bounds([0.0, columns[1].width as f64])
+        .y_bounds([0.0, 4.0])
+        .marker(Marker::Braille)
+        .paint(|context| context.draw(&Points::new(&points, color)));
+    frame.render_widget(chart, columns[1]);
+}
+
+fn disk_usage_color(usage_pct: f64) -> Color {
+    if usage_pct > 90.0 {
         Color::Red
-    } else if disk.usage_pct > 70.0 {
+    } else if usage_pct > 70.0 {
         Color::Yellow
     } else {
         Color::Green
-    };
-    let gauge = LineGauge::default()
-        .ratio(ratio)
-        .filled_symbol("█")
-        .unfilled_symbol("░")
-        .filled_style(Style::default().fg(color))
-        .unfilled_style(Style::default().fg(Color::DarkGray));
-    frame.render_widget(gauge, area);
+    }
 }
 
 fn shorten_mount(mount: &str) -> String {
