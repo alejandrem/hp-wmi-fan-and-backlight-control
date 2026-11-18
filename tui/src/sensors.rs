@@ -147,13 +147,37 @@ struct Temps {
 
 fn read_temperatures() -> Temps {
     Temps {
-        cpu: read_sys_f64("/sys/class/hwmon/hwmon4/temp1_input").map(|v| v / 1000.0),
-        igpu: read_sys_f64("/sys/class/hwmon/hwmon9/temp1_input").map(|v| v / 1000.0),
+        cpu: read_hwmon_temp(&["tctl", "tdie", "cpu", "package", "coretemp"]),
+        igpu: read_hwmon_temp(&["amdgpu", "gpu"]),
         gpu: read_nvidia_temp(),
-        nvme: read_sys_f64("/sys/class/hwmon/hwmon3/temp1_input").map(|v| v / 1000.0),
-        acpi: read_sys_f64("/sys/class/hwmon/hwmon1/temp1_input").map(|v| v / 1000.0),
-        chipset: read_sys_f64("/sys/class/hwmon/hwmon5/temp1_input").map(|v| v / 1000.0),
+        nvme: read_hwmon_temp(&["nvme"]),
+        acpi: read_hwmon_temp(&["acpitz", "acpi"]),
+        chipset: read_hwmon_temp(&["pch", "chipset"]),
     }
+}
+
+// hwmonN numbering changes across boots and kernel/device configurations.
+// Resolve a sensor by its stable hwmon name or temp label instead.
+fn read_hwmon_temp(needles: &[&str]) -> Option<f64> {
+    let entries = std::fs::read_dir("/sys/class/hwmon").ok()?;
+    for entry in entries.filter_map(Result::ok) {
+        let dir = entry.path();
+        let name = std::fs::read_to_string(dir.join("name")).unwrap_or_default();
+        let name = name.trim().to_ascii_lowercase();
+        let Ok(files) = std::fs::read_dir(&dir) else { continue };
+        for file in files.filter_map(Result::ok) {
+            let filename = file.file_name().to_string_lossy().to_string();
+            if !filename.starts_with("temp") || !filename.ends_with("_input") { continue; }
+            let label_path = dir.join(filename.replace("_input", "_label"));
+            let label = std::fs::read_to_string(label_path).unwrap_or_default().trim().to_ascii_lowercase();
+            if needles.iter().any(|n| name.contains(n) || label.contains(n)) {
+                if let Some(value) = read_sys_f64(file.path().to_str()?) {
+                    return Some(value / 1000.0);
+                }
+            }
+        }
+    }
+    None
 }
 
 struct Battery {
@@ -188,8 +212,20 @@ struct Fans {
 
 fn read_fans() -> Fans {
     Fans {
-        fan1: read_sys_i64("/sys/class/hwmon/hwmon7/fan1_input"),
-        fan2: read_sys_i64("/sys/class/hwmon/hwmon7/fan2_input"),
+        fan1: read_hwmon_fan(1),
+        fan2: read_hwmon_fan(2),
     }
+}
+
+fn read_hwmon_fan(number: u8) -> Option<i64> {
+    let entries = std::fs::read_dir("/sys/class/hwmon").ok()?;
+    let file = format!("fan{number}_input");
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path().join(&file);
+        if let Some(value) = path.to_str().and_then(read_sys_i64) {
+            return Some(value);
+        }
+    }
+    None
 }
 
