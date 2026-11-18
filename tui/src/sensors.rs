@@ -73,6 +73,16 @@ impl Sensors {
         let power = aggregate::read_power_data();
         let smoothed = aggregate::apply_smoothing(cpu, igpu, gpu, power);
         let system = aggregate::read_system_data();
+        smoothing::record_memory_usage(
+            system.memory.used_gib,
+            system.memory.available_gib,
+            system.memory.cached_gib,
+            system.memory.free_gib,
+            system.memory.total_gib,
+        );
+        smoothing::record_disk_usage(
+            &system.disks.iter().map(|disk| (disk.mount.clone(), disk.usage_pct)).collect::<Vec<_>>(),
+        );
 
         Sensors {
             cpu_temp: temps.cpu,
