@@ -1,67 +1,50 @@
-# fanctl — Control de ventiladores HP Victus (CLI en Rust)
+# Ale Top
 
-Herramienta ligera de línea de comandos para controlar los ventiladores de laptops HP Victus en Linux. Escrita en Rust puro, sin dependencias externas.
+Monitor de sistema para Linux, escrito en Rust y con una interfaz de terminal inspirada en **btop**. Muestra uso de CPU y núcleos, memoria, discos, red, procesos, batería, temperaturas, ventiladores y consumo cuando el hardware expone esas lecturas.
+
+El proyecto también conserva el binario `fanctl` para controlar ventiladores HP compatibles; Ale Top es solo de monitoreo y no cambia la configuración del equipo.
 
 ## Requisitos
 
-- Driver `hp-wmi` cargado (stock, TUXOV, o hp-wmi-extended)
-- El módulo debe exponer `fan1_target` y `fan2_target` (hp-wmi-extended recomendado)
-- Rust toolchain instalado
+- Linux con `/proc` y `/sys` montados.
+- Rust estable (edition 2024).
+- Terminal compatible con crossterm para la interfaz interactiva.
+- Opcional: `nvidia-smi` para lecturas de GPU NVIDIA y `ip` para mostrar la dirección IPv4.
 
-## Compilación
+## Compilar y ejecutar
 
-```bash
-cd tui
-cargo build --release
+Desde este directorio:
+
+```sh
+cargo build --release --bin aletop
+cargo run --release --bin aletop
 ```
 
-El binario queda en `target/release/fanctl`.
+El ejecutable queda en `target/release/aletop`. En una terminal, presiona `q` o `Esc` para salir. Si la salida no es una terminal, Ale Top imprime un resumen de las lecturas disponibles.
 
-## Instalación
+Para compilar la herramienta de ventiladores por separado:
 
-```bash
-# Copiar el binario a una ruta en $PATH
-sudo cp target/release/fanctl /usr/local/bin/fanctl
-
-# O instalar con cargo
-cargo install --path .
+```sh
+cargo build --release --bin fanctl
 ```
 
-## Uso
+`fanctl` controla laptops HP compatibles con Linux y el módulo `hp-wmi` (para RPM exactos, el driver debe exponer `fan1_target` y `fan2_target`):
 
-```bash
-sudo ./tui/target/release/fanctl rpm 3000      # 3000 RPM exactos
-sudo ./tui/target/release/fanctl rpm 5000      # 5000 RPM (por encima del límite BIOS)
-sudo ./tui/target/release/fanctl rpm 6000      # Máximo hardware (~6000 RPM)
-sudo ./tui/target/release/fanctl auto          # Control automático del BIOS
-sudo ./tui/target/release/fanctl max           # Ventiladores al máximo fijo
-sudo ./tui/target/release/fanctl status        # Ver estado actual
+```sh
+sudo ./target/release/fanctl status
+sudo ./target/release/fanctl rpm 3000
+sudo ./target/release/fanctl auto
+sudo ./target/release/fanctl max
 ```
 
-## Comandos
+Los cambios manuales pueden tardar varios segundos en reflejarse. Usa `auto` para devolver el control al firmware.
 
-| Comando | Descripción |
-|---------|-------------|
-| `sudo fanctl rpm [0-6500]` | Establece velocidad exacta en RPM. Activa modo MANUAL automáticamente. |
-| `sudo fanctl auto` | Devuelve el control al BIOS/firmware. |
-| `sudo fanctl max` | Ventiladores al 100% fijo. |
-| `sudo fanctl status` | Muestra modo actual, RPM de ambos ventiladores, targets y límites del BIOS. |
+## Sensores y compatibilidad
 
-## Notas
+Los datos generales se leen de `/proc` y `/sys`. Las temperaturas y RPM se buscan entre los dispositivos hwmon disponibles, así que no dependen del número variable `hwmonN`. La disponibilidad y los nombres de sensores dependen del kernel, los controladores y el hardware; las lecturas ausentes se muestran como `N/A` o se omiten.
 
-- El EC (Embedded Controller) tarda ~10 segundos en responder a cambios de RPM. El comando `rpm` espera automáticamente antes de mostrar el resultado.
-- El keep-alive del driver mantiene la velocidad configurada cada 90 segundos.
-- El hardware clampa los valores por encima de ~6000 RPM.
+La lista de procesos se ordena por actividad de CPU desde la lectura anterior. En la primera actualización todavía no hay una lectura previa, por lo que el uso de CPU de los procesos aparece en cero.
 
-## Compatibilidad
+## Estado del proyecto
 
-Testeado en:
-- HP Victus 15-fb2xxx (board 8C2F)
-- Kernel Linux 7.3.4-1-cachyos
-- Driver hp-wmi-extended con soporte `fan_target`
-- El modo max está diseñado para ser un "turbo" rápido del BIOS, no para
-control granular. Si quieres el máximo real del hardware (6000 RPM), usa siempre rpm 6000.
-
-## Licencia
-
-Misma licencia que el repositorio padre: [MIT](../LICENSE)
+Ale Top es un monitor inspirado en btop, no un clon completo: todavía no incluye toda la configuración, navegación, filtros ni personalización de btop.
