@@ -52,17 +52,17 @@ static NET_RX_SMOOTHER: OnceLock<Mutex<Smoother>> = OnceLock::new();
 static NET_TX_SMOOTHER: OnceLock<Mutex<Smoother>> = OnceLock::new();
 
 pub fn smooth_cpu_usage(value: f64) -> f64 {
-    let smoother = CPU_SMOOTHER.get_or_init(|| Mutex::new(Smoother::new(0.3)));
+    let smoother = CPU_SMOOTHER.get_or_init(|| Mutex::new(Smoother::new(0.65)));
     smoother.lock().unwrap().smooth(value)
 }
 
 pub fn smooth_igpu_usage(value: f64) -> f64 {
-    let smoother = IGPU_SMOOTHER.get_or_init(|| Mutex::new(Smoother::new(0.3)));
+    let smoother = IGPU_SMOOTHER.get_or_init(|| Mutex::new(Smoother::new(0.65)));
     smoother.lock().unwrap().smooth(value)
 }
 
 pub fn smooth_gpu_usage(value: f64) -> f64 {
-    let smoother = GPU_SMOOTHER.get_or_init(|| Mutex::new(Smoother::new(0.3)));
+    let smoother = GPU_SMOOTHER.get_or_init(|| Mutex::new(Smoother::new(0.65)));
     smoother.lock().unwrap().smooth(value)
 }
 
@@ -96,6 +96,7 @@ pub fn cpu_usage_history() -> Vec<f32> {
     guard.history().iter().map(|v| *v as f32).collect()
 }
 
+#[allow(dead_code)] // Reserved for separate per-GPU history panels.
 pub fn igpu_usage_history() -> Vec<f32> {
     let smoother = match IGPU_SMOOTHER.get() {
         Some(s) => s,
@@ -105,6 +106,7 @@ pub fn igpu_usage_history() -> Vec<f32> {
     guard.history().iter().map(|v| *v as f32).collect()
 }
 
+#[allow(dead_code)] // Reserved for separate per-GPU history panels.
 pub fn gpu_usage_history() -> Vec<f32> {
     let smoother = match GPU_SMOOTHER.get() {
         Some(s) => s,
@@ -160,12 +162,12 @@ pub fn smooth_total_power(value: f64) -> f64 {
 }
 
 pub fn smooth_net_rx(value: f64) -> f64 {
-    let smoother = NET_RX_SMOOTHER.get_or_init(|| Mutex::new(Smoother::new(0.3)));
+    let smoother = NET_RX_SMOOTHER.get_or_init(|| Mutex::new(Smoother::new(0.65)));
     smoother.lock().unwrap().smooth(value)
 }
 
 pub fn smooth_net_tx(value: f64) -> f64 {
-    let smoother = NET_TX_SMOOTHER.get_or_init(|| Mutex::new(Smoother::new(0.3)));
+    let smoother = NET_TX_SMOOTHER.get_or_init(|| Mutex::new(Smoother::new(0.65)));
     smoother.lock().unwrap().smooth(value)
 }
 
